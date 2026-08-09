@@ -1,0 +1,63 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: bank-of-anthos
+
+resources:
+  - namespace.yaml
+  - config.yaml
+  - accounts-db.yaml
+  - ledger-db.yaml
+  - frontend.yaml
+  - userservice.yaml
+  - contacts.yaml
+  - ledger-writer.yaml
+  - balance-reader.yaml
+  - transaction-history.yaml
+  - ingress.yaml
+  - ecr-credential-refresh-cronjob.yaml
+
+# Consumed by the ecr-credential-refresh CronJob. cd.yml overwrites both
+# literals at deploy time with real values (account ID, region) via
+# `kustomize edit add configmap ecr-registry-config --from-literal=... --behavior=merge`.
+# disableNameSuffixHash keeps the name stable as exactly `ecr-registry-config`
+# so the CronJob's envFrom reference and repeated merges both keep working.
+configMapGenerator:
+  - name: ecr-registry-config
+    literals:
+      - AWS_REGION=us-east-1
+      - ECR_REGISTRY=REPLACE_WITH_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+# cd.yml runs `kustomize edit set image <name>=<ecr-repo-url>:<tag>` for each of
+# these (using terraform's ecr_repository_urls output + the git SHA as tag)
+# right before `kubectl apply -k`. Left as placeholders here so this base is
+# usable and reviewable on its own — no build-time secrets or account IDs
+# baked into committed YAML.
+images:
+  - name: bank-of-anthos/frontend
+    newName: bank-of-anthos/frontend
+    newTag: latest
+  - name: bank-of-anthos/userservice
+    newName: bank-of-anthos/userservice
+    newTag: latest
+  - name: bank-of-anthos/contacts
+    newName: bank-of-anthos/contacts
+    newTag: latest
+  - name: bank-of-anthos/accounts-db
+    newName: bank-of-anthos/accounts-db
+    newTag: latest
+  - name: bank-of-anthos/ledger-db
+    newName: bank-of-anthos/ledger-db
+    newTag: latest
+  - name: bank-of-anthos/ledgerwriter
+    newName: bank-of-anthos/ledgerwriter
+    newTag: latest
+  - name: bank-of-anthos/balancereader
+    newName: bank-of-anthos/balancereader
+    newTag: latest
+  - name: bank-of-anthos/transactionhistory
+    newName: bank-of-anthos/transactionhistory
+    newTag: latest

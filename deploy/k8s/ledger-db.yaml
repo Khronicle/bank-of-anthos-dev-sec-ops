@@ -1,0 +1,120 @@
+# Adapted from kubernetes-manifests/ledger-db.yaml — same pattern as accounts-db.yaml
+# (Secret split out, PVC instead of emptyDir, trimmed resources).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: ledger-db
+    application: bank-of-anthos
+    environment: development
+    team: ledger
+    tier: db
+  name: ledger-db-config
+data:
+  POSTGRES_DB: postgresdb
+  POSTGRES_USER: admin
+  SPRING_DATASOURCE_USERNAME: admin
+  SPRING_DATASOURCE_URL: jdbc:postgresql://ledger-db:5432/postgresdb
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app: ledger-db
+    application: bank-of-anthos
+    environment: development
+    team: ledger
+    tier: db
+  name: ledger-db-secret
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: password
+  SPRING_DATASOURCE_PASSWORD: password
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    application: bank-of-anthos
+    environment: development
+    team: ledger
+    tier: db
+  name: ledger-db
+spec:
+  ports:
+    - name: tcp
+      port: 5432
+      targetPort: 5432
+  selector:
+    app: ledger-db
+    application: bank-of-anthos
+    environment: development
+    team: ledger
+    tier: db
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    application: bank-of-anthos
+    environment: development
+    team: ledger
+    tier: db
+  name: ledger-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ledger-db
+      application: bank-of-anthos
+      environment: development
+      team: ledger
+      tier: db
+  serviceName: ledger-db
+  template:
+    metadata:
+      labels:
+        app: ledger-db
+        application: bank-of-anthos
+        environment: development
+        team: ledger
+        tier: db
+    spec:
+      containers:
+        - envFrom:
+            - configMapRef:
+                name: environment-config
+            - configMapRef:
+                name: ledger-db-config
+            - secretRef:
+                name: ledger-db-secret
+            - configMapRef:
+                name: demo-data-config
+          image: bank-of-anthos/ledger-db:latest
+          name: postgres
+          ports:
+            - containerPort: 5432
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 100Mi
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: postgresdb
+              subPath: postgres
+      serviceAccountName: bank-of-anthos
+      imagePullSecrets:
+        - name: regcred
+  volumeClaimTemplates:
+    - metadata:
+        name: postgresdb
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 500Mi
