@@ -1,6 +1,7 @@
 # k3s ships Traefik as the default ingress controller — this is the only
-# inbound path into the cluster, which is why servicelb is disabled in
-# terraform/user_data.sh.tftpl (nothing else needs a LoadBalancer Service).
+# inbound path into the cluster. Traefik itself is exposed via k3s's bundled
+# servicelb (see terraform/user_data.sh.tftpl), which binds the node's host
+# ports 80/443 to the Traefik Service.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

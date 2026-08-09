@@ -40,26 +40,14 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_agent" {
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 }
 
-# The ECR-credential-refresh CronJob (running as a pod on this node, using the
-# node's instance-profile credentials via IMDS) needs to mint auth tokens.
-data "aws_iam_policy_document" "ecr_pull" {
-  statement {
-    effect = "Allow"
-    actions = [
-      "ecr:GetAuthorizationToken",
-      "ecr:BatchCheckLayerAvailability",
-      "ecr:GetDownloadUrlForLayer",
-      "ecr:BatchGetImage",
-    ]
-    resources = ["*"]
-  }
-}
-
-resource "aws_iam_role_policy" "ecr_pull" {
-  name   = "${var.project_name}-ecr-pull"
-  role   = aws_iam_role.node.id
-  policy = data.aws_iam_policy_document.ecr_pull.json
-}
+# No ecr:* grant on the node role: nothing here mints ECR tokens via IMDS.
+# .github/workflows/refresh-ecr-creds.yml does that using the GitHub Actions
+# OIDC role instead (see terraform/bootstrap/main.tf's ECRAuth/ECRPushPull
+# statements), and pulls images using the resulting `regcred` Secret's
+# embedded bearer token directly — kubelet/containerd never touches the
+# node's IAM role for that. Keeping ECR permissions off the node role means
+# a compromised pod that somehow reached IMDS still couldn't touch ECR
+# through it.
 
 resource "aws_iam_instance_profile" "node" {
   name = "${var.project_name}-node-profile"
@@ -77,6 +65,24 @@ resource "aws_instance" "node" {
     volume_size = 20 # GB — well within the 30GB free-tier EBS allowance
     volume_type = "gp3"
     encrypted   = true
+  }
+
+  # hop_limit stays at the safe default (1): only the host network namespace
+  # can reach IMDS, no pod on this node can. An earlier version raised this
+  # to 2 so an in-cluster CronJob could reach IMDS to mint ECR tokens — but
+  # that meant EVERY pod on the node (including the internet-facing,
+  # DAST-scanned app services) could also reach IMDS and assume the node's
+  # full IAM role, not just the intended one. Moving credential refresh to
+  # .github/workflows/refresh-ecr-creds.yml (OIDC-authenticated, no IMDS)
+  # removed the need for any pod to reach IMDS at all, so this could revert
+  # to the safe default instead of trying to scope hop_limit's blast radius
+  # down (which isn't possible — it's a whole-instance setting). http_tokens
+  # stays "required" regardless, enforcing IMDSv2 (blocks the plain-HTTP-GET
+  # SSRF path IMDSv1 allows) even for the host itself.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
   }
 
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {

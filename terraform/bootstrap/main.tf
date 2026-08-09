@@ -203,6 +203,10 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "logs:CreateLogGroup", "logs:PutRetentionPolicy", "logs:DescribeLogGroups", "logs:TagResource",
       "cloudwatch:PutMetricAlarm", "cloudwatch:DeleteAlarms", "cloudwatch:DescribeAlarms",
       "sns:CreateTopic", "sns:DeleteTopic", "sns:Subscribe", "sns:GetTopicAttributes", "sns:TagResource",
+      # aws_budgets_budget in terraform/monitoring.tf — AWS Budgets exposes
+      # exactly these two IAM actions; ViewBudget covers reads, ModifyBudget
+      # covers create/update/delete.
+      "budgets:ViewBudget", "budgets:ModifyBudget",
     ]
     resources = ["*"]
   }

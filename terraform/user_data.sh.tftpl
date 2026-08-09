@@ -12,13 +12,18 @@ swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 # --- k3s: single-node, trimmed to what this box actually needs ---
-# - servicelb disabled: Traefik Ingress handles the only inbound path (frontend),
-#   no Service of type LoadBalancer is used.
+# - servicelb (klipper-lb) stays ENABLED: k3s's bundled Traefik is installed
+#   as a Service of type LoadBalancer, and servicelb is the only mechanism
+#   that binds that Service to the node's host ports 80/443 on a cluster
+#   with no cloud LB provider. Disabling it leaves Traefik's Service stuck
+#   Pending with no external IP — the app becomes unreachable from outside
+#   even though every pod is Running. It's a lightweight component (a few
+#   MB of RAM for the controller / a tiny per-service proxy), not worth
+#   trading away for the memory budget.
 # - metrics-server disabled: not consumed by anything in this deployment
 #   (CloudWatch agent covers stage 12's monitoring requirement instead).
 # - fail-swap-on=false: required so kubelet tolerates the swap file above.
 curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server \
-  --disable servicelb \
   --disable metrics-server \
   --kubelet-arg=fail-swap-on=false \
   --write-kubeconfig-mode=644" sh -

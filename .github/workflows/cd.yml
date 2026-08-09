@@ -125,6 +125,8 @@ jobs:
     name: "Stage 10: deploy via SSM"
     needs: [terraform-apply, build-scan-push]
     runs-on: ubuntu-latest
+    outputs:
+      jwt_key_missing: ${{ steps.jwt-check.outputs.jwt_key_missing }}
     steps:
       - uses: actions/checkout@v5
       - uses: aws-actions/configure-aws-credentials@v5
@@ -136,7 +138,7 @@ jobs:
           curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
           sudo mv kustomize /usr/local/bin/
 
-      - name: Set image tags + registry config
+      - name: Set image tags
         working-directory: deploy/k8s
         env:
           REGISTRY: ${{ needs.terraform-apply.outputs.ecr_registry }}
@@ -145,10 +147,6 @@ jobs:
           for svc in frontend userservice contacts accounts-db ledger-db ledgerwriter balancereader transactionhistory; do
             kustomize edit set image "bank-of-anthos/${svc}=${REGISTRY}/bank-of-anthos/${svc}:${SHA}"
           done
-          kustomize edit add configmap ecr-registry-config \
-            --from-literal=AWS_REGION="${{ env.AWS_REGION }}" \
-            --from-literal=ECR_REGISTRY="${REGISTRY}" \
-            --behavior=merge
 
       - name: Package + upload release
         env:
@@ -164,34 +162,39 @@ jobs:
           BUCKET: ${{ needs.terraform-apply.outputs.deploy_bucket }}
           SHA: ${{ github.sha }}
         run: |
-          CMD_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --comment "deploy ${SHA}" \
-            --parameters commands="[
-              \"aws s3 cp s3://${BUCKET}/releases/${SHA}.tar.gz /tmp/deploy.tar.gz\",
-              \"sudo rm -rf /opt/bank-of-anthos && sudo mkdir -p /opt/bank-of-anthos\",
-              \"sudo tar xzf /tmp/deploy.tar.gz -C /opt/bank-of-anthos\",
-              \"export KUBECONFIG=/etc/rancher/k3s/k3s.yaml\",
-              \"sudo -E kubectl apply -k /opt/bank-of-anthos/deploy/k8s\",
-              \"sudo -E kubectl -n bank-of-anthos create job --from=cronjob/ecr-credential-refresh ecr-seed-$(date +%s) || true\"
-            ]" \
-            --query "Command.CommandId" --output text)
+          scripts/ci/ssm-run.sh "$INSTANCE_ID" \
+            "aws s3 cp s3://${BUCKET}/releases/${SHA}.tar.gz /tmp/deploy.tar.gz" \
+            "sudo rm -rf /opt/bank-of-anthos && sudo mkdir -p /opt/bank-of-anthos" \
+            "sudo tar xzf /tmp/deploy.tar.gz -C /opt/bank-of-anthos" \
+            "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml && sudo -E kubectl apply -k /opt/bank-of-anthos/deploy/k8s"
 
-          for i in $(seq 1 30); do
-            STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)
-            echo "SSM command status: $STATUS"
-            case "$STATUS" in
-              Success) exit 0 ;;
-              Failed|Cancelled|TimedOut) aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID"; exit 1 ;;
-            esac
-            sleep 10
-          done
-          echo "Timed out waiting for SSM command"; exit 1
+      - name: Check jwt-key Secret
+        id: jwt-check
+        env:
+          INSTANCE_ID: ${{ needs.terraform-apply.outputs.node_instance_id }}
+        run: |
+          # Separate, small SSM call on purpose: isolates this check's output
+          # from the (much larger) apply output above, so it can never be
+          # lost to StandardOutputContent's ~24,000-character truncation.
+          OUTPUT=$(scripts/ci/ssm-run.sh "$INSTANCE_ID" \
+            "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml && sudo -E kubectl -n bank-of-anthos get secret jwt-key >/dev/null 2>&1 && echo PRESENT || echo MISSING")
+          echo "jwt_key_missing=$([[ "$OUTPUT" == *MISSING* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [[ "$OUTPUT" == *MISSING* ]]; then
+            echo "::warning::jwt-key Secret is missing — frontend/userservice/contacts/ledgerwriter/balancereader/transactionhistory cannot start until it exists. This is a deliberate one-time manual step (the private key must never transit CI): run 'aws ssm start-session --target ${INSTANCE_ID}' then 'sudo bash /opt/bank-of-anthos/scripts/bootstrap-jwt-secret.sh'. dast-zap will be skipped until this is resolved."
+          fi
+
+  refresh-ecr-creds:
+    name: "Stage 10: seed/refresh regcred"
+    needs: render-and-deploy
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/refresh-ecr-creds.yml
 
   dast-zap:
     name: "Stage 11: OWASP ZAP baseline (report-only)"
-    needs: [terraform-apply, render-and-deploy]
+    needs: [terraform-apply, render-and-deploy, refresh-ecr-creds]
+    if: needs.render-and-deploy.outputs.jwt_key_missing != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Give the app a moment to become reachable

@@ -6,7 +6,7 @@
 #
 # Usage (from a team member's machine, after `aws configure`):
 #   aws ssm start-session --target <instance-id>
-#   sudo bash /opt/bank-of-anthos/bootstrap-jwt-secret.sh
+#   sudo bash /opt/bank-of-anthos/scripts/bootstrap-jwt-secret.sh
 #
 # Idempotent: does nothing if the jwt-key Secret already exists.
 set -euo pipefail

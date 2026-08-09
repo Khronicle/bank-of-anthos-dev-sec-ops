@@ -7,7 +7,7 @@ output "lock_table_name" {
 }
 
 output "github_actions_role_arn" {
-  description = "Set this as the GH_ACTIONS_ROLE_ARN repo variable / secret used by ci.yml and cd.yml"
+  description = "Set this as the AWS_ROLE_ARN repo variable used by ci.yml and cd.yml"
   value       = aws_iam_role.github_actions.arn
 }
 
