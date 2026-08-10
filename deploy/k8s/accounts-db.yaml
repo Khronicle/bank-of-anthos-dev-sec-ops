@@ -1,0 +1,114 @@
+# Adapted from kubernetes-manifests/accounts-db.yaml:
+#  - credentials split out of the plaintext ConfigMap into a Secret
+#  - emptyDir -> PVC (k3s local-path StorageClass) so data survives pod restarts
+#  - resource requests/limits trimmed to fit an 8-service app on 1GB RAM
+#  - image is a placeholder name; deploy/k8s/kustomization.yaml repoints it to ECR
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app: accounts-db
+    team: accounts
+    tier: db
+  name: accounts-db-config
+data:
+  POSTGRES_DB: accounts-db
+  POSTGRES_USER: accounts-admin
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app: accounts-db
+    team: accounts
+    tier: db
+  name: accounts-db-secret
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: accounts-pwd
+  ACCOUNTS_DB_URI: postgresql://accounts-admin:accounts-pwd@accounts-db:5432/accounts-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    team: accounts
+    tier: db
+  name: accounts-db
+spec:
+  ports:
+    - name: tcp
+      port: 5432
+      protocol: TCP
+      targetPort: 5432
+  selector:
+    app: accounts-db
+    application: bank-of-anthos
+    environment: development
+    team: accounts
+    tier: db
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    team: accounts
+    tier: db
+  name: accounts-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: accounts-db
+      application: bank-of-anthos
+      environment: development
+      team: accounts
+      tier: db
+  serviceName: accounts-db
+  template:
+    metadata:
+      labels:
+        app: accounts-db
+        application: bank-of-anthos
+        environment: development
+        team: accounts
+        tier: db
+    spec:
+      containers:
+        - envFrom:
+            - configMapRef:
+                name: environment-config
+            - configMapRef:
+                name: accounts-db-config
+            - secretRef:
+                name: accounts-db-secret
+            - configMapRef:
+                name: demo-data-config
+          image: bank-of-anthos/accounts-db:latest
+          name: accounts-db
+          ports:
+            - containerPort: 5432
+          resources:
+            limits:
+              cpu: 200m
+              memory: 200Mi
+            requests:
+              cpu: 50m
+              memory: 80Mi
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: postgresdb
+              subPath: postgres
+      serviceAccountName: bank-of-anthos
+      imagePullSecrets:
+        - name: regcred
+  volumeClaimTemplates:
+    - metadata:
+        name: postgresdb
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 500Mi

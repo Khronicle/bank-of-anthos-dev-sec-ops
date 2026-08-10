@@ -1,0 +1,112 @@
+# Adapted from kubernetes-manifests/contacts.yaml: istio annotation dropped,
+# GCP tracing disabled, resources trimmed, image placeholder repointed by kustomization.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    team: accounts
+    tier: backend
+  name: contacts
+spec:
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  selector:
+    app: contacts
+    application: bank-of-anthos
+    environment: development
+    team: accounts
+    tier: backend
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    team: accounts
+    tier: backend
+  name: contacts
+spec:
+  selector:
+    matchLabels:
+      app: contacts
+      application: bank-of-anthos
+      environment: development
+      team: accounts
+      tier: backend
+  template:
+    metadata:
+      labels:
+        app: contacts
+        application: bank-of-anthos
+        environment: development
+        team: accounts
+        tier: backend
+    spec:
+      containers:
+        - env:
+            - name: VERSION
+              value: v0.6.10-aws
+            - name: PORT
+              value: "8080"
+            - name: ENABLE_TRACING
+              value: "false"
+            - name: LOG_LEVEL
+              value: info
+          envFrom:
+            - configMapRef:
+                name: environment-config
+            - configMapRef:
+                name: accounts-db-config
+            - secretRef:
+                name: accounts-db-secret
+          image: bank-of-anthos/contacts:latest
+          name: contacts
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 10
+          resources:
+            limits:
+              cpu: 150m
+              ephemeral-storage: 0.25Gi
+              memory: 96Mi
+            requests:
+              cpu: 50m
+              ephemeral-storage: 0.25Gi
+              memory: 40Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - all
+            privileged: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /tmp/.ssh
+              name: publickey
+              readOnly: true
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      serviceAccountName: bank-of-anthos
+      imagePullSecrets:
+        - name: regcred
+      terminationGracePeriodSeconds: 5
+      volumes:
+        - emptyDir: {}
+          name: tmp
+        - name: publickey
+          secret:
+            items:
+              - key: jwtRS256.key.pub
+                path: publickey
+            secretName: jwt-key

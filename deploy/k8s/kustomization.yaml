@@ -1,0 +1,79 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: bank-of-anthos
+
+# application/environment are identical across every resource in this base
+# (unlike team/tier, which genuinely vary per service and stay hand-authored
+# below). Centralizing them here means a future rename is a one-line change
+# instead of an edit to ~15 label blocks across 8 files.
+#
+# includeSelectors is deliberately false — verified empirically that with it
+# false, this transformer ONLY touches each resource's top-level
+# metadata.labels. It does NOT reach spec.selector, spec.template.metadata.labels
+# (a separate includeTemplates flag controls that, unset/false here), or
+# Service spec.selector — those all stay hand-authored with application/
+# environment hardcoded in every file. Do not remove those hardcoded values:
+# nothing will re-add them, and removing them would break Service->Pod and
+# Deployment/StatefulSet->Pod label matching (pods stuck NotReady).
+# (Uses the modern `labels:` field, not the deprecated `commonLabels:`.)
+labels:
+  - pairs:
+      application: bank-of-anthos
+      environment: development
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - config.yaml
+  - accounts-db.yaml
+  - ledger-db.yaml
+  - frontend.yaml
+  - userservice.yaml
+  - contacts.yaml
+  - ledger-writer.yaml
+  - balance-reader.yaml
+  - transaction-history.yaml
+  - ingress.yaml
+
+# regcred (referenced by every Deployment/StatefulSet's imagePullSecrets) is
+# deliberately NOT declared here. It's owned entirely by
+# .github/workflows/refresh-ecr-creds.yml, which rewrites it via SSM using a
+# GitHub Actions OIDC-authenticated role — no pod on this cluster touches it,
+# and no `kubectl apply -k` here ever will either. (An earlier version
+# declared it as a static placeholder Secret specifically so this file's
+# in-cluster CronJob's RBAC could avoid an unscoped `create` grant — but that
+# meant every `kubectl apply -k` reset it back to the placeholder, wiping out
+# real credentials. Moving credential refresh out of the cluster entirely
+# removed the whole class of problem, not just that symptom.)
+
+# cd.yml runs `kustomize edit set image <name>=<ecr-repo-url>:<tag>` for each of
+# these (using terraform's ecr_repository_urls output + the git SHA as tag)
+# right before `kubectl apply -k`. Left as placeholders here so this base is
+# usable and reviewable on its own — no build-time secrets or account IDs
+# baked into committed YAML.
+images:
+  - name: bank-of-anthos/frontend
+    newName: bank-of-anthos/frontend
+    newTag: latest
+  - name: bank-of-anthos/userservice
+    newName: bank-of-anthos/userservice
+    newTag: latest
+  - name: bank-of-anthos/contacts
+    newName: bank-of-anthos/contacts
+    newTag: latest
+  - name: bank-of-anthos/accounts-db
+    newName: bank-of-anthos/accounts-db
+    newTag: latest
+  - name: bank-of-anthos/ledger-db
+    newName: bank-of-anthos/ledger-db
+    newTag: latest
+  - name: bank-of-anthos/ledgerwriter
+    newName: bank-of-anthos/ledgerwriter
+    newTag: latest
+  - name: bank-of-anthos/balancereader
+    newName: bank-of-anthos/balancereader
+    newTag: latest
+  - name: bank-of-anthos/transactionhistory
+    newName: bank-of-anthos/transactionhistory
+    newTag: latest

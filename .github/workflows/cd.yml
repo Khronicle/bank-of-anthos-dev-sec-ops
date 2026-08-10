@@ -1,0 +1,207 @@
+name: cd
+
+# Section 7 stages 6-12, run on every merge to main: container build + image
+# scan, push to ECR, terraform apply, deploy via SSM (no SSH), DAST.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write # required for OIDC — see aws-actions/configure-aws-credentials
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  terraform-apply:
+    name: "Stage 8: terraform apply"
+    runs-on: ubuntu-latest
+    outputs:
+      ecr_registry: ${{ steps.tf-out.outputs.ecr_registry }}
+      node_instance_id: ${{ steps.tf-out.outputs.node_instance_id }}
+      node_public_ip: ${{ steps.tf-out.outputs.node_public_ip }}
+      deploy_bucket: ${{ steps.tf-out.outputs.deploy_bucket }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+      - name: terraform init
+        working-directory: terraform
+        run: terraform init -input=false
+      - name: terraform apply
+        working-directory: terraform
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="budget_alert_email=${{ vars.BUDGET_ALERT_EMAIL }}" \
+            -var="alarm_email=${{ vars.ALARM_EMAIL }}"
+      - name: Capture outputs
+        id: tf-out
+        working-directory: terraform
+        run: |
+          echo "ecr_registry=$(terraform output -json ecr_repository_urls | jq -r '.frontend' | cut -d/ -f1)" >> "$GITHUB_OUTPUT"
+          echo "node_instance_id=$(terraform output -raw node_instance_id)" >> "$GITHUB_OUTPUT"
+          echo "node_public_ip=$(terraform output -raw node_public_ip)" >> "$GITHUB_OUTPUT"
+          echo "deploy_bucket=$(terraform output -raw deploy_artifacts_bucket)" >> "$GITHUB_OUTPUT"
+
+  build-scan-push:
+    name: "Stage 6-7: build+scan+push (${{ matrix.service }})"
+    needs: terraform-apply
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: frontend
+            type: docker
+            context: src/frontend
+          - service: userservice
+            type: docker
+            context: src/accounts/userservice
+          - service: contacts
+            type: docker
+            context: src/accounts/contacts
+          - service: accounts-db
+            type: docker
+            context: src/accounts/accounts-db
+          - service: ledger-db
+            type: docker
+            context: src/ledger/ledger-db
+          - service: ledgerwriter
+            type: jib
+            module: src/ledger/ledgerwriter
+          - service: balancereader
+            type: jib
+            module: src/ledger/balancereader
+          - service: transactionhistory
+            type: jib
+            module: src/ledger/transactionhistory
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - name: Build image (docker)
+        if: matrix.type == 'docker'
+        run: |
+          docker build -t local/${{ matrix.service }}:latest ${{ matrix.context }}
+
+      - name: Set up Java (for jib build)
+        if: matrix.type == 'jib'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Build image (jib)
+        if: matrix.type == 'jib'
+        run: |
+          ./mvnw -pl ${{ matrix.module }} -am compile jib:dockerBuild \
+            -Djib.to.image=local/${{ matrix.service }}:latest
+
+      - name: "Stage 6: Trivy image scan"
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: local/${{ matrix.service }}:latest
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: "Stage 7: push to ECR"
+        run: |
+          TAG="${{ needs.terraform-apply.outputs.ecr_registry }}/bank-of-anthos/${{ matrix.service }}:${{ github.sha }}"
+          docker tag local/${{ matrix.service }}:latest "$TAG"
+          docker push "$TAG"
+
+  render-and-deploy:
+    name: "Stage 10: deploy via SSM"
+    needs: [terraform-apply, build-scan-push]
+    runs-on: ubuntu-latest
+    outputs:
+      jwt_key_missing: ${{ steps.jwt-check.outputs.jwt_key_missing }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Install kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Set image tags
+        working-directory: deploy/k8s
+        env:
+          REGISTRY: ${{ needs.terraform-apply.outputs.ecr_registry }}
+          SHA: ${{ github.sha }}
+        run: |
+          for svc in frontend userservice contacts accounts-db ledger-db ledgerwriter balancereader transactionhistory; do
+            kustomize edit set image "bank-of-anthos/${svc}=${REGISTRY}/bank-of-anthos/${svc}:${SHA}"
+          done
+
+      - name: Package + upload release
+        env:
+          BUCKET: ${{ needs.terraform-apply.outputs.deploy_bucket }}
+          SHA: ${{ github.sha }}
+        run: |
+          tar czf deploy.tar.gz deploy/k8s scripts/bootstrap-jwt-secret.sh
+          aws s3 cp deploy.tar.gz "s3://${BUCKET}/releases/${SHA}.tar.gz"
+
+      - name: Deploy via SSM Run Command (no SSH)
+        env:
+          INSTANCE_ID: ${{ needs.terraform-apply.outputs.node_instance_id }}
+          BUCKET: ${{ needs.terraform-apply.outputs.deploy_bucket }}
+          SHA: ${{ github.sha }}
+        run: |
+          scripts/ci/ssm-run.sh "$INSTANCE_ID" \
+            "aws s3 cp s3://${BUCKET}/releases/${SHA}.tar.gz /tmp/deploy.tar.gz" \
+            "sudo rm -rf /opt/bank-of-anthos && sudo mkdir -p /opt/bank-of-anthos" \
+            "sudo tar xzf /tmp/deploy.tar.gz -C /opt/bank-of-anthos" \
+            "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml && sudo -E kubectl apply -k /opt/bank-of-anthos/deploy/k8s"
+
+      - name: Check jwt-key Secret
+        id: jwt-check
+        env:
+          INSTANCE_ID: ${{ needs.terraform-apply.outputs.node_instance_id }}
+        run: |
+          # Separate, small SSM call on purpose: isolates this check's output
+          # from the (much larger) apply output above, so it can never be
+          # lost to StandardOutputContent's ~24,000-character truncation.
+          OUTPUT=$(scripts/ci/ssm-run.sh "$INSTANCE_ID" \
+            "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml && sudo -E kubectl -n bank-of-anthos get secret jwt-key >/dev/null 2>&1 && echo PRESENT || echo MISSING")
+          echo "jwt_key_missing=$([[ "$OUTPUT" == *MISSING* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [[ "$OUTPUT" == *MISSING* ]]; then
+            echo "::warning::jwt-key Secret is missing — frontend/userservice/contacts/ledgerwriter/balancereader/transactionhistory cannot start until it exists. This is a deliberate one-time manual step (the private key must never transit CI): run 'aws ssm start-session --target ${INSTANCE_ID}' then 'sudo bash /opt/bank-of-anthos/scripts/bootstrap-jwt-secret.sh'. dast-zap will be skipped until this is resolved."
+          fi
+
+  refresh-ecr-creds:
+    name: "Stage 10: seed/refresh regcred"
+    needs: render-and-deploy
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/refresh-ecr-creds.yml
+
+  dast-zap:
+    name: "Stage 11: OWASP ZAP baseline (report-only)"
+    needs: [terraform-apply, render-and-deploy, refresh-ecr-creds]
+    if: needs.render-and-deploy.outputs.jwt_key_missing != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Give the app a moment to become reachable
+        run: sleep 30
+      - name: ZAP baseline scan
+        uses: zaproxy/action-baseline@v0.12.0
+        continue-on-error: true # report-only for now, see CAPSTONE_DEVSECOPS_DEPLOYMENT.md
+        with:
+          target: "http://${{ needs.terraform-apply.outputs.node_public_ip }}/"
+          cmd_options: "-a"

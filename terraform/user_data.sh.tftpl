@@ -1,0 +1,71 @@
+#!/bin/bash
+set -euxo pipefail
+
+# --- Swap: the deliberate safety net for a 1GB free-tier box running 8 pods ---
+# Aggregate pod memory *limits* intentionally exceed physical RAM (documented in
+# CAPSTONE_DEVSECOPS_DEPLOYMENT.md) — swap is what keeps that from becoming an
+# instant OOM kill instead of graceful degradation under burst load.
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+# --- k3s: single-node, trimmed to what this box actually needs ---
+# - servicelb (klipper-lb) stays ENABLED: k3s's bundled Traefik is installed
+#   as a Service of type LoadBalancer, and servicelb is the only mechanism
+#   that binds that Service to the node's host ports 80/443 on a cluster
+#   with no cloud LB provider. Disabling it leaves Traefik's Service stuck
+#   Pending with no external IP — the app becomes unreachable from outside
+#   even though every pod is Running. It's a lightweight component (a few
+#   MB of RAM for the controller / a tiny per-service proxy), not worth
+#   trading away for the memory budget.
+# - metrics-server disabled: not consumed by anything in this deployment
+#   (CloudWatch agent covers stage 12's monitoring requirement instead).
+# - fail-swap-on=false: required so kubelet tolerates the swap file above.
+curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server \
+  --disable metrics-server \
+  --kubelet-arg=fail-swap-on=false \
+  --write-kubeconfig-mode=644" sh -
+
+# Wait for the API server before anything downstream (deploy scripts run via
+# SSM) tries to use kubectl.
+until /usr/local/bin/k3s kubectl get nodes >/dev/null 2>&1; do sleep 5; done
+
+ln -sf /usr/local/bin/k3s /usr/local/bin/kubectl
+echo 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml' >> /etc/profile.d/k3s.sh
+
+# --- CloudWatch agent: host + container metrics/logs, no extra in-cluster pods ---
+dnf install -y amazon-cloudwatch-agent
+
+cat > /opt/aws/amazon-cloudwatch-agent/etc/config.json <<'EOF'
+{
+  "metrics": {
+    "namespace": "BankOfAnthos/Node",
+    "metrics_collected": {
+      "mem": { "measurement": ["mem_used_percent"] },
+      "swap": { "measurement": ["swap_used_percent"] },
+      "cpu": { "measurement": ["cpu_usage_active"], "totalcpu": true },
+      "disk": { "measurement": ["used_percent"], "resources": ["/"] }
+    },
+    "append_dimensions": { "InstanceId": "$${aws:InstanceId}" }
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/containers/*.log",
+            "log_group_name": "/bank-of-anthos/containers",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": 7
+          }
+        ]
+      }
+    }
+  }
+}
+EOF
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json -s
