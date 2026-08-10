@@ -26,11 +26,28 @@ on:
       - '.github/workflows/terraform-validate-ci.yaml'
 jobs:
   job:
-    runs-on: ubuntu-22.04
+    # ubuntu-22.04 is deprecated: GitHub begins brownouts 2026-09-17 and removes
+    # the image entirely on 2027-04-17, so jobs pinned to it start failing
+    # intermittently — a confusing failure mode worth getting ahead of.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      # Previously this used whatever Terraform the runner image happened to
+      # ship. That version changes without a commit on our side, and
+      # required_version has no upper bound, so a runner image bump could break
+      # the build with nothing in our history to explain it. Pin it explicitly.
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        working-directory: terraform
+        run: terraform fmt -check -recursive -diff
+
       - name: terraform init & validate
+        working-directory: terraform
         run: |
-          cd terraform
-          terraform init -backend=false
-          terraform validate
+          terraform init -backend=false -input=false
+          terraform validate -no-color

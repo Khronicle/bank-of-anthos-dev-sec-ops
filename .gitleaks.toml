@@ -1,0 +1,78 @@
+title = "bank-of-anthos-dev-sec-ops"
+
+# Start from gitleaks' built-in ruleset and narrow it, rather than replacing it.
+#
+# Every exception below is deliberately narrow: either scoped to a path AND a
+# literal pattern, or matched against one specific known-public key value. None
+# of them disable a rule, so a genuinely new secret in any of these same files
+# is still reported.
+#
+# Verify after any change:
+#   gitleaks git . --config .gitleaks.toml   # full history
+#   gitleaks dir . --config .gitleaks.toml   # working tree
+
+[extend]
+useDefault = true
+
+
+# ---------------------------------------------------------------------------
+# 1. Kubernetes Secret volume projections reference key material by FILENAME.
+# ---------------------------------------------------------------------------
+# Manifests mount the JWT keypair like this:
+#
+#     - name: keys
+#       secret:
+#         items:
+#           - key: jwtRS256.key        <-- a filename, not a credential
+#             path: privatekey
+#         secretName: jwt-key
+#
+# gitleaks' `generic-api-key` rule matches `key: <value>` whenever <value>
+# clears an entropy threshold; "jwtRS256.key.pub" scores 3.88 and trips it.
+#
+# The real keypair is generated on the node by scripts/bootstrap-jwt-secret.sh
+# into the `jwt-key` Secret and is never committed — deliberately, so the
+# private key never transits CI.
+#
+# condition = "AND": the finding must be in a manifest path AND match the
+# volume-projection shape.
+[[allowlists]]
+description = "K8s Secret volume item names (jwtRS256.key / .pub) are filenames, not secrets"
+condition = "AND"
+paths = [
+  '''(deploy/k8s|kubernetes-manifests|release)/[^/]+\.ya?ml$''',
+  '''src/.+/k8s/.+\.ya?ml$''',
+  '''src/components/.+\.ya?ml$''',
+]
+regexTarget = "line"
+regexes = [
+  '''^\s*-?\s*key:\s*jwtRS256\.key(\.pub)?\s*$''',
+]
+
+
+# ---------------------------------------------------------------------------
+# 2. Upstream's publicly-published demo JWT keypair, in inherited history only.
+# ---------------------------------------------------------------------------
+# This fork carries GoogleCloudPlatform/bank-of-anthos' full history, which
+# embedded a demo RSA keypair directly in kubernetes-manifests/, extras/, iac/
+# and release/. It is the same single keypair in every case (159 of the 172
+# historical findings), it has been public in the upstream repo since 2019, and
+# it is NOT present in this repo's working tree — our deployment generates a
+# fresh key on the node instead.
+#
+# Matched on the key's own distinctive prefix (both the raw PEM and the
+# base64-of-PEM form used inside Secret manifests), NOT by path or rule. A
+# DIFFERENT private key committed to any of these files still fails the scan —
+# which is the property we actually want.
+#
+# Rewriting upstream history to purge this was rejected: it would break every
+# upstream merge-base, and the key is already public, so it buys no real
+# security. Documented and accepted instead.
+[[allowlists]]
+description = "Upstream Google demo JWT keypair — public since 2019, absent from working tree"
+regexes = [
+  # raw PEM (rules: private-key)
+  '''MIIJKwIBAAKCAgEA4GvZNSkj5iiWb2DZM2fCx5bGGYgwaK4SMsyI8K8oFQepL13Y''',
+  # base64-of-PEM inside a Secret's data: (rules: kubernetes-secret-yaml)
+  '''LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlKS3dJQkFBS0NBZ0VBNEd2Wk5Ta2o1aWlX''',
+]

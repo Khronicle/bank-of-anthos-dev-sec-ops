@@ -30,7 +30,12 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+      # Pinned to match terraform-validate-ci.yaml — CI validating with one
+      # version while CD applies with another is how surprises happen.
       - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
       - name: terraform init
         working-directory: terraform
         run: terraform init -input=false
@@ -106,8 +111,10 @@ jobs:
           ./mvnw -pl ${{ matrix.module }} -am compile jib:dockerBuild \
             -Djib.to.image=local/${{ matrix.service }}:latest
 
+      # See the note in ci.yml: upstream re-tagged its releases with a `v`
+      # prefix, deleting the bare `0.28.0` tag.
       - name: "Stage 6: Trivy image scan"
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: local/${{ matrix.service }}:latest

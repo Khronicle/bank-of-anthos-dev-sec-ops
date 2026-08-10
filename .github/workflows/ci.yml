@@ -16,6 +16,13 @@ jobs:
   secrets-scan:
     name: "Stage 2: Gitleaks secrets scan"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # gitleaks-action posts findings as PR review comments. The workflow-level
+      # `contents: read` strips every other scope, so without this the scan runs
+      # but silently fails to report. Set GITLEAKS_ENABLE_COMMENTS=false instead
+      # if you'd rather keep the token read-only.
+      pull-requests: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -23,6 +30,11 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Scoped false-positive allowlists, each justified in the file itself.
+          # Without this the scan fails on Kubernetes Secret volume projections
+          # (which name key material by filename, not value) and on upstream's
+          # public demo keypair carried in inherited history.
+          GITLEAKS_CONFIG: .gitleaks.toml
 
   build-test-python:
     name: "Stage 3: build+test (${{ matrix.service }})"
@@ -64,7 +76,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: aquasecurity/trivy-action@0.28.0
+      # Pinned with the `v` prefix: upstream re-tagged every release in March
+      # 2026, which deleted the old bare `0.28.0` tag this used to point at and
+      # broke resolution. Consider pinning to a commit SHA — a tag is a mutable
+      # pointer, and that mutability is exactly what bit us here.
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -79,7 +95,16 @@ jobs:
       image: semgrep/semgrep
     steps:
       - uses: actions/checkout@v5
-      - run: semgrep scan --config p/ci --error
+        with:
+          fetch-depth: 0 # `semgrep ci` diffs against the merge base
+      # `semgrep scan --error` failed the job on ANY finding anywhere in the
+      # tree — including the upstream Google code this fork can't modify, so it
+      # could never go green. `semgrep ci` is the CI entrypoint: it compares
+      # against the PR's merge base and fails only on findings the PR
+      # introduces. Inherited debt is still reported, just not gating.
+      - run: semgrep ci
+        env:
+          SEMGREP_RULES: p/ci
 
   iac-scan-checkov:
     name: "Stage 9: Checkov IaC scan"
