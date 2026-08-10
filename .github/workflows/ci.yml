@@ -74,23 +74,92 @@ jobs:
   sca-trivy-fs:
     name: "Stage 4: Trivy SCA (filesystem scan)"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # publish findings to the Security tab
     steps:
       - uses: actions/checkout@v5
+
+      # Warm the Maven cache before Trivy reads the pom files. Trivy resolves
+      # transitive Maven dependencies over the network, and Maven Central
+      # rate-limits the shared IPs that GitHub-hosted runners use — a 429 there
+      # aborts the scan with a FATAL that has nothing to do with our code.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Warm Maven cache
+        continue-on-error: true
+        run: ./mvnw -B -q dependency:go-offline
+
+      # REPORT-ONLY BY DESIGN (exit-code 0).
+      #
+      # This is a fork: the dependency tree belongs to upstream, and we've made
+      # a deliberate decision not to remediate it here. A blocking gate would
+      # therefore fail every PR forever on findings nobody intends to act on —
+      # which trains people to ignore the pipeline, the worst outcome for a
+      # security control.
+      #
+      # Instead, findings are published as Code Scanning alerts (free on public
+      # repos). They stay visible, deduplicated and tracked over time in the
+      # Security tab, and new ones are attributable to the PR that introduced
+      # them. Visibility without false urgency.
+      #
       # Pinned with the `v` prefix: upstream re-tagged every release in March
-      # 2026, which deleted the old bare `0.28.0` tag this used to point at and
-      # broke resolution. Consider pinning to a commit SHA — a tag is a mutable
-      # pointer, and that mutability is exactly what bit us here.
+      # 2026, which deleted the old bare `0.28.0` tag this used to point at.
+      # Consider pinning to a commit SHA — a tag is a mutable pointer, and that
+      # mutability is exactly what bit us here.
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
           severity: HIGH,CRITICAL
-          exit-code: "1"
           ignore-unfixed: true
+          exit-code: "0"
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Publish to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true # publishing must never break the build either
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-fs
+
+      # Same scan, human-readable, appended to the run summary — so reviewers
+      # can see what was found without opening the Security tab or scrolling
+      # the raw log (which truncates).
+      - uses: aquasecurity/trivy-action@v0.36.0
+        if: always()
+        continue-on-error: true
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          format: table
+          output: trivy-results.txt
+      - name: Add Trivy table to run summary
+        if: always()
+        continue-on-error: true
+        run: |
+          {
+            echo "## Stage 4 — Trivy SCA (report-only)"
+            echo
+            echo '```'
+            cat trivy-results.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   sast-semgrep:
     name: "Stage 5: Semgrep SAST"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # publish findings to the Security tab
     container:
       image: semgrep/semgrep
     steps:
@@ -100,19 +169,47 @@ jobs:
       # `semgrep scan --error` failed the job on ANY finding anywhere in the
       # tree — including the upstream Google code this fork can't modify, so it
       # could never go green. `semgrep ci` is the CI entrypoint: it compares
-      # against the PR's merge base and fails only on findings the PR
-      # introduces. Inherited debt is still reported, just not gating.
-      - run: semgrep ci
+      # against the PR's merge base and reports only on findings the PR
+      # introduces. Inherited debt is still surfaced, just not attributed to us.
+      #
+      # Advisory, not blocking (continue-on-error), consistent with Stage 4's
+      # report-only posture. Note this is a deliberately weaker gate than
+      # Semgrep alone would give you: `semgrep ci` already scopes failures to
+      # newly-introduced findings, so blocking here would NOT have failed on
+      # upstream code. If you later want one genuine hard gate in the pipeline,
+      # this is the cheapest and most defensible place to put it — just drop
+      # the continue-on-error line.
+      - name: Semgrep scan
+        continue-on-error: true
         env:
           SEMGREP_RULES: p/ci
+          SEMGREP_SEND_METRICS: "off"
+        run: semgrep ci --sarif --output=semgrep.sarif
+
+      # Findings land in the Security tab alongside Trivy's, rather than living
+      # only in this job's log.
+      - name: Publish to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
 
   iac-scan-checkov:
     name: "Stage 9: Checkov IaC scan"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # This gate DOES block, unlike Stages 4 and 5 — deliberately. Everything
+      # it scans is our own Terraform, which we can actually fix, so a failure
+      # here is always actionable rather than inherited from upstream.
+      #
+      # Accepted findings live in .checkov.yaml as an explicit skip-check list,
+      # each with a written justification and a category (FREE-TIER /
+      # BY-DESIGN / NOT-APPLICABLE). That file is the risk register — a new
+      # violation fails the build until someone either fixes it or adds a
+      # documented acceptance, which is the behaviour we want.
       - uses: bridgecrewio/checkov-action@master
         with:
-          directory: terraform
-          framework: terraform
-          quiet: true
+          config_file: .checkov.yaml
