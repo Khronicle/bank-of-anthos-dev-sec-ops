@@ -49,7 +49,7 @@ resource "aws_security_group" "node" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "HTTP (Traefik ingress -> frontend)"
+    description = "HTTP (Traefik ingress to frontend)"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
