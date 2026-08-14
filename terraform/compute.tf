@@ -65,7 +65,14 @@ resource "aws_instance" "node" {
   iam_instance_profile   = aws_iam_instance_profile.node.name
 
   root_block_device {
-    volume_size = 20 # GB — well within the 30GB free-tier EBS allowance
+    # 30GB, not less: the Amazon Linux 2023 AMI's backing snapshot requires a
+    # root volume >= its own size (AWS rejects anything smaller with
+    # InvalidBlockDeviceMapping), and that snapshot has grown to exactly the
+    # free tier's 30GB ceiling. This uses the full free-tier EBS allowance —
+    # there's nothing else on this stack that needs EBS, so that's fine, but
+    # it means there's no headroom left for an additional volume without
+    # incurring cost.
+    volume_size = 30 # GB — the free-tier EBS ceiling, not "well within" it
     volume_type = "gp3"
     encrypted   = true
   }
