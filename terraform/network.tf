@@ -45,7 +45,7 @@ resource "aws_route_table_association" "public" {
 
 resource "aws_security_group" "node" {
   name        = "${var.project_name}-node"
-  description = "Bank of Anthos k3s node — HTTP/HTTPS in, no inbound SSH (deployment uses SSM)"
+  description = "Bank of Anthos k3s node - HTTP/HTTPS in, no inbound SSH (deployment uses SSM)"
   vpc_id      = aws_vpc.main.id
 
   ingress {

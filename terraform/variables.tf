@@ -25,6 +25,13 @@ variable "ssh_cidr_blocks" {
 variable "budget_alert_email" {
   description = "Email address to notify when the AWS Budgets alert fires"
   type        = string
+  validation {
+    # Catches an empty/blank value at plan time with a clear message instead
+    # of AWS Budgets' "notification must have at least one subscriber" —
+    # which looks like a config bug in monitoring.tf, not a missing -var.
+    condition     = can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.budget_alert_email))
+    error_message = "budget_alert_email must be a real email address (e.g. you@example.com) — got an empty or invalid value. Pass it explicitly: -var=\"budget_alert_email=...\"."
+  }
 }
 
 variable "budget_limit_usd" {
@@ -36,4 +43,11 @@ variable "budget_limit_usd" {
 variable "alarm_email" {
   description = "Email address for the CloudWatch memory-pressure alarm (SNS subscription)"
   type        = string
+  validation {
+    # Same rationale as budget_alert_email: an empty value here produces
+    # SNS's opaque "InvalidParameter: Endpoint" instead of naming the
+    # actual missing input.
+    condition     = can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.alarm_email))
+    error_message = "alarm_email must be a real email address (e.g. you@example.com) — got an empty or invalid value. Pass it explicitly: -var=\"alarm_email=...\"."
+  }
 }
