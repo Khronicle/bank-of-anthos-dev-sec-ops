@@ -15,16 +15,44 @@ resource "aws_s3_bucket_public_access_block" "deploy_artifacts" {
   restrict_public_buckets = true
 }
 
+# Versioning is what makes a bad deploy recoverable: cd.yml writes each release
+# to releases/<sha>.tar.gz, so an overwrite of an existing SHA would otherwise
+# be unrecoverable. Costs nothing extra here because the lifecycle rule below
+# expires noncurrent versions aggressively. (Checkov CKV_AWS_21)
+resource "aws_s3_bucket_versioning" "deploy_artifacts" {
+  bucket = aws_s3_bucket.deploy_artifacts.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 # Old releases aren't needed once deployed — keep this well inside the 5GB
 # free-tier S3 allowance.
 resource "aws_s3_bucket_lifecycle_configuration" "deploy_artifacts" {
   bucket = aws_s3_bucket.deploy_artifacts.id
+
+  # Versioning is enabled above, so this must be applied for the rules below to
+  # behave predictably against noncurrent versions.
+  depends_on = [aws_s3_bucket_versioning.deploy_artifacts]
+
   rule {
     id     = "expire-old-releases"
     status = "Enabled"
     filter {}
     expiration {
       days = 14
+    }
+
+    # Without this, enabling versioning above would quietly accumulate every
+    # superseded object forever and eat the free-tier allowance.
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+
+    # A multipart upload interrupted mid-flight (a cancelled CI job) leaves
+    # billable parts behind that are invisible in the console. (CKV_AWS_300)
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }
