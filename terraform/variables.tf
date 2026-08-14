@@ -13,7 +13,13 @@ variable "project_name" {
 variable "instance_type" {
   description = "EC2 instance type running k3s. t3.micro is free-tier eligible (750 hrs/mo for 12mo); t3.small is the documented paid fallback (~$15/mo) if memory pressure proves unworkable."
   type        = string
-  default     = "t3.micro"
+  # Switched to the documented fallback: t3.micro's ~900MB usable RAM couldn't
+  # survive all 8 services cold-starting at once — kine (k3s's SQLite-backed
+  # datastore) fell behind under swap-induced disk I/O saturation badly enough
+  # that the API server stopped responding to any client (kubectl, SSM) for
+  # 8+ minutes with no sign of self-recovery. t3.small roughly triples usable
+  # RAM, leaving free tier (~$15/mo).
+  default = "t3.small"
 }
 
 variable "ssh_cidr_blocks" {
