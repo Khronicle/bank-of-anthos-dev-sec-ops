@@ -1,6 +1,6 @@
 # Bank of Anthos
 
-> **Capstone note:** this fork is deployed using an independent GitHub Actions + Terraform (AWS EC2/k3s, free-tier) + Kustomize pipeline — not the GKE quickstart further down this page. See [`CAPSTONE_DEPLOYMENT_STEPS.md`](./CAPSTONE_DEPLOYMENT_STEPS.md) for the condensed stage-by-stage checklist, [`CAPSTONE_DEVSECOPS_DEPLOYMENT.md`](./CAPSTONE_DEVSECOPS_DEPLOYMENT.md) for the narrative guide, or [`CAPSTONE_FULL_DEPLOYMENT_GUIDE.md`](./CAPSTONE_FULL_DEPLOYMENT_GUIDE.md) for one document with every file's full contents inlined.
+> **Capstone note:** this fork is deployed using an independent GitHub Actions + Terraform (AWS EC2/k3s, free-tier) + Kustomize pipeline — not the GKE quickstart further down this page. See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for a quick-reference snapshot of the current infrastructure, [`CAPSTONE_DEPLOYMENT_STEPS.md`](./CAPSTONE_DEPLOYMENT_STEPS.md) for the condensed stage-by-stage checklist, [`CAPSTONE_DEVSECOPS_DEPLOYMENT.md`](./CAPSTONE_DEVSECOPS_DEPLOYMENT.md) for the narrative guide, or [`CAPSTONE_FULL_DEPLOYMENT_GUIDE.md`](./CAPSTONE_FULL_DEPLOYMENT_GUIDE.md) for one document with every file's full contents inlined.
 
 <!-- Checks badge below seem to take a "neutral" check as a negative and shows failures if some checks are neutral. Commenting out the badge for now. -->
 <!-- ![GitHub branch check runs](https://img.shields.io/github/check-runs/GoogleCloudPlatform/bank-of-anthos/main) -->
