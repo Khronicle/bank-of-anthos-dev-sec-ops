@@ -1,0 +1,74 @@
+name: audit-iam-user
+
+# Stage 9 companion, report-only. .checkov.yaml's "RETIRED" comment block
+# documents that the CI IAM user's permissions (admin-access, no
+# repo/ref scoping, no expiry) are a risk this Terraform stack can't see —
+# it isn't managed here, so no `terraform plan`/Checkov run will ever catch
+# a change to it. That comment used to just tell a human to remember to run
+# `aws iam list-attached-user-policies` themselves, with nothing actually
+# doing it. This workflow is that automation: it runs on its own schedule
+# (independent of whether terraform changes, since the thing it's auditing
+# isn't terraform-managed) and posts the IAM user's current attached +
+# inline policies to the job summary every run, warning loudly if
+# AdministratorAccess (or an equivalent full-access policy) is attached —
+# which, per the trade-off documented in terraform/bootstrap/README.md, is
+# expected to be true today, but should never go unnoticed.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: "Stage 9: audit static IAM user permissions (report-only)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Resolve the authenticated IAM user
+        id: whoami
+        run: |
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          if [[ "$ARN" != *:user/* ]]; then
+            echo "::warning::CI is not authenticating as an IAM user (ARN: $ARN) — this audit only knows how to inspect IAM users. Skipping."
+            echo "is_user=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "is_user=true" >> "$GITHUB_OUTPUT"
+          echo "name=${ARN##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: List attached + inline policies
+        if: steps.whoami.outputs.is_user == 'true'
+        id: policies
+        env:
+          USER: ${{ steps.whoami.outputs.name }}
+        run: |
+          aws iam list-attached-user-policies --user-name "$USER" \
+            --query 'AttachedPolicies[].PolicyArn' --output json | jq -S . > attached.json
+          aws iam list-user-policies --user-name "$USER" \
+            --query 'PolicyNames' --output json | jq -S . > inline.json
+
+          {
+            echo "## Stage 9 — IAM user permission audit: \`$USER\` (report-only)"
+            echo
+            echo "Attached managed policies:"
+            echo '```json'
+            cat attached.json
+            echo '```'
+            echo "Inline policies:"
+            echo '```json'
+            cat inline.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if grep -q 'policy/AdministratorAccess' attached.json; then
+            echo "::warning::IAM user '$USER' has AdministratorAccess attached — this is the documented trade-off (terraform/bootstrap/README.md), not a surprise, but it's the single highest-value fact in this report: CI can do anything in this AWS account, not just deploy this app."
+          fi

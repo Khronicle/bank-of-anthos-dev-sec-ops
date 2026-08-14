@@ -41,13 +41,16 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_agent" {
 }
 
 # No ecr:* grant on the node role: nothing here mints ECR tokens via IMDS.
-# .github/workflows/refresh-ecr-creds.yml does that using the GitHub Actions
-# OIDC role instead (see terraform/bootstrap/main.tf's ECRAuth/ECRPushPull
-# statements), and pulls images using the resulting `regcred` Secret's
-# embedded bearer token directly — kubelet/containerd never touches the
-# node's IAM role for that. Keeping ECR permissions off the node role means
-# a compromised pod that somehow reached IMDS still couldn't touch ECR
-# through it.
+# .github/workflows/refresh-ecr-creds.yml does that instead, using the same
+# IAM user's static keys as the rest of the pipeline, and pulls images using
+# the resulting `regcred` Secret's embedded bearer token directly —
+# kubelet/containerd never touches the node's IAM role for that. Keeping ECR
+# permissions off the node role means a compromised pod that somehow reached
+# IMDS still couldn't touch ECR *through the node role* — that's a real,
+# narrow win, but don't read it as bounding overall blast radius: the same
+# GitHub secrets that authenticate refresh-ecr-creds.yml are a static,
+# admin-access IAM user's keys (see terraform/bootstrap/README.md), which is
+# a far larger and longer-lived exposure than anything scoped to this node.
 
 resource "aws_iam_instance_profile" "node" {
   name = "${var.project_name}-node-profile"
@@ -73,8 +76,9 @@ resource "aws_instance" "node" {
   # that meant EVERY pod on the node (including the internet-facing,
   # DAST-scanned app services) could also reach IMDS and assume the node's
   # full IAM role, not just the intended one. Moving credential refresh to
-  # .github/workflows/refresh-ecr-creds.yml (OIDC-authenticated, no IMDS)
-  # removed the need for any pod to reach IMDS at all, so this could revert
+  # .github/workflows/refresh-ecr-creds.yml (authenticated with the IAM
+  # user's static keys, no IMDS) removed the need for any pod to reach IMDS
+  # at all, so this could revert
   # to the safe default instead of trying to scope hop_limit's blast radius
   # down (which isn't possible — it's a whole-instance setting). http_tokens
   # stays "required" regardless, enforcing IMDSv2 (blocks the plain-HTTP-GET

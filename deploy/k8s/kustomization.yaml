@@ -38,9 +38,9 @@ resources:
 
 # regcred (referenced by every Deployment/StatefulSet's imagePullSecrets) is
 # deliberately NOT declared here. It's owned entirely by
-# .github/workflows/refresh-ecr-creds.yml, which rewrites it via SSM using a
-# GitHub Actions OIDC-authenticated role — no pod on this cluster touches it,
-# and no `kubectl apply -k` here ever will either. (An earlier version
+# .github/workflows/refresh-ecr-creds.yml, which rewrites it via SSM using
+# the same AWS credentials as the rest of the pipeline — no pod on this
+# cluster touches it, and no `kubectl apply -k` here ever will either. (An earlier version
 # declared it as a static placeholder Secret specifically so this file's
 # in-cluster CronJob's RBAC could avoid an unscoped `create` grant — but that
 # meant every `kubectl apply -k` reset it back to the placeholder, wiping out

@@ -20,14 +20,3 @@ variable "lock_table_name" {
   type        = string
   default     = "bank-of-anthos-tf-lock"
 }
-
-variable "github_org" {
-  description = "GitHub org or username that owns the repo (for the OIDC trust condition)"
-  type        = string
-}
-
-variable "github_repo" {
-  description = "GitHub repo name (for the OIDC trust condition)"
-  type        = string
-  default     = "bank-of-anthos-dev-sec-ops"
-}

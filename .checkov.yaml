@@ -95,32 +95,34 @@ skip-check:
   - CKV_AWS_28 # DynamoDB point-in-time recovery
 
   # ---------------------------------------------------------------------
-  # ACCEPTED WITH RESERVATIONS — see note below. Not free-tier, not noise.
+  # RETIRED — the resource these applied to no longer exists. See note below.
   # ---------------------------------------------------------------------
-  # [BY-DESIGN, but genuinely risky] The GitHub Actions OIDC role's
-  # ManageProjectInfra statement grants ec2:* plus iam:CreateRole,
-  # iam:AttachRolePolicy and iam:PassRole on resources = ["*"].
+  # This block used to skip CKV_AWS_107/109/110/111/356 for the GitHub
+  # Actions OIDC role's ManageProjectInfra statement (ec2:* plus
+  # iam:CreateRole/AttachRolePolicy/PassRole on resources = ["*"]) — a real
+  # privilege-escalation path Checkov was right to flag, accepted here only
+  # because that role genuinely needed those permissions.
   #
-  # That combination is a real privilege-escalation path, not a false
-  # positive: anything able to run that workflow can create a role with
-  # AdministratorAccess and pass it to an instance it controls, i.e. escalate
-  # to full account admin. Checkov is right to flag it.
+  # That role (aws_iam_role.github_actions in terraform/bootstrap/main.tf)
+  # was deleted when CI moved from OIDC to a static IAM user's access keys
+  # (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY GitHub secrets — see
+  # terraform/bootstrap/README.md and CAPSTONE_DEVSECOPS_DEPLOYMENT.md stage
+  # 0). No skip-checks are needed for it anymore: with the resource gone,
+  # Checkov has nothing left to flag under these IDs.
   #
-  # It is accepted here only because Terraform genuinely does manage IAM
-  # roles for this stack and AWS does not support tag-scoped conditions
-  # cleanly across every action involved.
+  # This does NOT mean the risk is gone — it moved somewhere Checkov cannot
+  # see it. The IAM user itself (its permissions, its access-key lifecycle)
+  # isn't managed by this Terraform stack, so no amount of `terraform plan`
+  # scanning will ever catch a change to it. Per the informed trade-off
+  # documented in terraform/bootstrap/README.md, that user has admin-access
+  # permissions with no repo/ref scoping and no expiry — broader and
+  # longer-lived than the role this section used to describe.
   #
-  # PROPER FIX (recommended, not yet implemented): attach an IAM permissions
-  # boundary and condition iam:CreateRole / iam:AttachRolePolicy on
-  # iam:PermissionsBoundary matching it, so CI-created roles can never exceed
-  # the boundary. Until then this is the most significant accepted risk in
-  # the stack — treat repo write access as equivalent to AWS account admin,
-  # and protect the main branch accordingly.
-  - CKV_AWS_107 # IAM policy allows credentials exposure
-  - CKV_AWS_109 # IAM policy allows permissions management without constraint
-  - CKV_AWS_110 # IAM policy allows privilege escalation
-  - CKV_AWS_111 # IAM policy allows write access without constraint
-  - CKV_AWS_356 # IAM policy allows "*" resource for restrictable actions
+  # .github/workflows/audit-iam-user.yml tracks this risk on its own weekly
+  # schedule (independent of terraform changes, since this resource isn't
+  # terraform-managed and this file's "re-run after any terraform change"
+  # header would otherwise never fire for it) and posts the user's current
+  # attached/inline policies to the job summary every run.
 
   # ---------------------------------------------------------------------
   # Low-value / cosmetic
