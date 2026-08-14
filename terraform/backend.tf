@@ -13,7 +13,7 @@
 # table on the next apply. Clean them up as a separate, deliberate change.
 terraform {
   backend "s3" {
-    bucket       = "REPLACE_WITH_state_bucket_name_OUTPUT"
+    bucket       = "bank-of-anthos-tfstate-490809404878"
     key          = "bank-of-anthos/terraform.tfstate"
     region       = "us-east-1"
     use_lockfile = true
