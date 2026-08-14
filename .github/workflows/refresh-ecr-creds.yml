@@ -1,0 +1,70 @@
+name: refresh-ecr-creds
+
+# Rewrites the `regcred` Secret with a fresh ECR auth token (they expire
+# every 12h). Runs on a schedule to keep credentials alive between deploys,
+# and cd.yml also calls this directly right after every deploy so the app
+# has working pull credentials immediately rather than waiting for the next
+# 6h tick.
+#
+# This used to be an in-cluster CronJob minting its own token via the node's
+# IMDS-reachable instance-profile credentials — which required raising the
+# EC2 instance's IMDS hop limit to 2, making IMDS (and the node's full IAM
+# role: SSM, CloudWatch, ECR) reachable from EVERY pod on the node, not just
+# the credential-refresh one. Doing this from GitHub Actions instead — using
+# the same AWS credentials as the rest of the pipeline — means no pod on
+# the cluster needs IMDS access at all, so terraform/compute.tf's
+# metadata_options can stay at the safe default hop limit.
+#
+# Auth: static IAM user access keys (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY
+# repo secrets), not OIDC. See CAPSTONE_DEVSECOPS_DEPLOYMENT.md stage 0 for
+# why the project's default recommendation is OIDC (short-lived, nothing to
+# leak) and what a static-key setup takes on in exchange — the account owner
+# made an informed call to use an existing admin-access IAM user instead.
+#
+# Trade-off worth knowing: the ECR token is passed as a literal argument in
+# the SSM command text, so it's visible to anyone with ssm:GetCommandInvocation
+# on this instance while the 12h-lived token is still valid. Same class of
+# exposure the in-cluster CronJob had (visible via `kubectl logs`/`describe
+# pod` to anyone with in-cluster read access) — not solved here, just moved.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Read terraform outputs (no apply)
+        id: tf-out
+        working-directory: terraform
+        run: |
+          terraform init -input=false
+          echo "ecr_registry=$(terraform output -json ecr_repository_urls | jq -r '.frontend' | cut -d/ -f1)" >> "$GITHUB_OUTPUT"
+          echo "node_instance_id=$(terraform output -raw node_instance_id)" >> "$GITHUB_OUTPUT"
+
+      - name: Mint fresh ECR token and rewrite regcred via SSM
+        env:
+          INSTANCE_ID: ${{ steps.tf-out.outputs.node_instance_id }}
+          REGISTRY: ${{ steps.tf-out.outputs.ecr_registry }}
+        run: |
+          TOKEN=$(aws ecr get-login-password --region "${{ env.AWS_REGION }}")
+          scripts/ci/ssm-run.sh "$INSTANCE_ID" \
+            "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml" \
+            "sudo -E kubectl create secret docker-registry regcred -n bank-of-anthos --docker-server=${REGISTRY} --docker-username=AWS --docker-password=${TOKEN} --dry-run=client -o yaml | sudo -E kubectl apply -f -"
