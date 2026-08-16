@@ -93,10 +93,17 @@ spec:
           resources:
             limits:
               cpu: 200m
-              memory: 96Mi
+              # 96Mi was undersized: gunicorn's master + single worker
+              # (--threads 4, no --workers set, so gunicorn defaults to 1
+              # worker) combine to ~100MB RSS in practice, tipping over a
+              # 96Mi (98304Ki) limit almost immediately after every
+              # container start. That drove a continuous OOM-kill/restart
+              # loop severe enough to starve the node's SSM/CloudWatch
+              # agents. Matches userservice's already-working tier.
+              memory: 192Mi
             requests:
               cpu: 50m
-              memory: 40Mi
+              memory: 96Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
